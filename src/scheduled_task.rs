@@ -1,12 +1,7 @@
 use std::env;
+use std::fs;
 use std::process::Command;
 
-/// Install a Windows scheduled task that re-runs `uwd2 inject` at every
-/// interactive logon (including session reconnect).
-///
-/// Uses PowerShell's `Register-ScheduledTask` so no COM interop is needed.
-/// Requires elevation; if not elevated the PowerShell call will fail with a
-/// permission error.
 pub fn install_task() {
     let exe = match env::current_exe() {
         Ok(p) => p,
@@ -15,15 +10,26 @@ pub fn install_task() {
             return;
         }
     };
+
+    let vbs_path = exe.with_file_name("uwd2_launch.vbs");
     let exe_str = exe.to_string_lossy();
-    // Escape single quotes for PowerShell string literals
-    let exe_escaped = exe_str.replace('\'', "''");
+    let vbs = format!(
+        "CreateObject(\"WScript.Shell\").Run Chr(34) & \"{exe}\" & Chr(34) & \" inject\", 0, True\r\n",
+        exe = exe_str.replace('"', "\"\"")
+    );
+    if let Err(e) = fs::write(&vbs_path, vbs.as_bytes()) {
+        eprintln!("Cannot write launcher script: {e}");
+        return;
+    }
+
+    let vbs_str = vbs_path.to_string_lossy();
+    let vbs_ps = vbs_str.replace('\'', "''");
 
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
-$exe = '{exe_escaped}'
-$action   = New-ScheduledTaskAction -Execute $exe -Argument 'inject'
+$vbs      = '{vbs_ps}'
+$action   = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//nologo "' + $vbs + '"')
 $trigger  = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -44,7 +50,7 @@ Register-ScheduledTask `
     -Force | Out-Null
 Write-Host 'Task registered.'
 "#,
-        exe_escaped = exe_escaped
+        vbs_ps = vbs_ps
     );
 
     let status = Command::new("powershell")
@@ -63,20 +69,19 @@ Write-Host 'Task registered.'
             println!("Scheduled task 'UWD2_WatermarkRemover' installed.");
             println!("UWD2 will now run automatically at every logon.");
         }
-        Ok(s) => {
-            eprintln!(
-                "PowerShell exited with code {:?}. Try running uwd2 as administrator.",
-                s.code()
-            );
-        }
-        Err(e) => {
-            eprintln!("Failed to launch PowerShell: {e}");
-        }
+        Ok(s) => eprintln!(
+            "PowerShell exited with code {:?}. Try running uwd2 as administrator.",
+            s.code()
+        ),
+        Err(e) => eprintln!("Failed to launch PowerShell: {e}"),
     }
 }
 
-/// Remove the scheduled task installed by `install_task`.
 pub fn remove_task() {
+    if let Ok(exe) = env::current_exe() {
+        let _ = fs::remove_file(exe.with_file_name("uwd2_launch.vbs"));
+    }
+
     let script = r#"
 $ErrorActionPreference = 'Stop'
 Unregister-ScheduledTask -TaskName 'UWD2_WatermarkRemover' -Confirm:$false

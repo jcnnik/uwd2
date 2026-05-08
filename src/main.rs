@@ -43,6 +43,22 @@ fn rva() -> u32 {
 }
 
 fn inject() {
+    use std::path::Path;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    loop {
+        let sys = sysinfo::System::new_with_specifics(
+            sysinfo::RefreshKind::new().with_processes(sysinfo::ProcessRefreshKind::everything()),
+        );
+        if sys.processes().values().any(|p| {
+            p.exe().map_or(false, |exe| exe == Path::new(r"C:\Windows\explorer.exe"))
+        }) {
+            break;
+        }
+        sleep(Duration::from_millis(500));
+    }
+
     unsafe {
         inject::inject(rva());
         inject::refresh();
